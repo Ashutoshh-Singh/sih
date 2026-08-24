@@ -109,7 +109,7 @@ export const SourceAgreementCard: React.FC<{ routeCode?: string }> = ({
               </thead>
               <tbody className="divide-y divide-slate-800/60 bg-slate-950/60 font-mono">
                 {data.tariffs.map((t, idx) => {
-                  const fareVal = t.standardized_payable_fare ?? t.total_fare ?? (t.base_fare + t.taxes) ?? 0;
+                  const fareVal = t.standardized_payable_fare ?? t.total_fare ?? (t.base_fare + t.taxes);
                   const diffVal = t.diff_from_median_pct ?? 0;
                   return (
                     <tr key={idx} className="hover:bg-slate-900/40">

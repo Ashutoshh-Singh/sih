@@ -228,6 +228,7 @@ function FlightArc({
   return (
     <group>
       {/* Flight Path Curve */}
+      {/* @ts-ignore */}
       <line geometry={lineGeo}>
         <lineBasicMaterial
           color={isSelected ? "#38bdf8" : arcColor}
