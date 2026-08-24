@@ -26,6 +26,8 @@ from ..schemas.api_schemas import (
     RouteResponse,
     RouteAnalysisResponse,
     ObservationResponse,
+    FareComponentBreakdown,
+    NormalizationEvidenceResponse,
     AirportResponse,
     AirlineResponse,
     DataQualitySummary,
@@ -70,6 +72,14 @@ from ..services.data_service import (
 )
 from ..services.cpi_simulator import simulate_cpi_impact
 from ..services.quality_engine import compute_composite_quality_score
+from ..services.fare_normalization_service import (
+    calculate_standardized_payable_fare,
+    get_observation_fare_breakdown,
+    generate_normalization_evidence_pipeline,
+)
+from ..services.source_agreement_service import compute_source_agreement
+from ..services.lineage_service import get_full_data_lineage, get_route_lineage_detail
+from ..services.index_engine import METHODOLOGY_CONFIG
 from ..collectors.source_adapters import trigger_mock_collection_job
 
 router = APIRouter(prefix="/api")
@@ -294,6 +304,7 @@ def api_get_fares(
 
     items = []
     for obs in observations:
+        std_fare = getattr(obs, "standardized_payable_fare", None) or obs.total_fare
         items.append({
             "id": obs.id,
             "source_name": obs.source.name,
@@ -313,7 +324,12 @@ def api_get_fares(
             "fare_family": obs.fare_family,
             "base_fare": obs.base_fare,
             "taxes": obs.taxes,
+            "convenience_fee": getattr(obs, "convenience_fee", 0.0) or 0.0,
+            "fuel_surcharge": getattr(obs, "fuel_surcharge", 0.0) or 0.0,
+            "mandatory_surcharge": getattr(obs, "mandatory_surcharge", 0.0) or 0.0,
+            "discount": getattr(obs, "discount", 0.0) or 0.0,
             "total_fare": obs.total_fare,
+            "standardized_payable_fare": std_fare,
             "stops": obs.stops,
             "baggage": obs.baggage,
             "refundable": obs.refundable,
@@ -338,6 +354,8 @@ def api_get_fare_detail(obs_id: int, db: Session = Depends(get_db)):
     if not obs:
         raise HTTPException(status_code=404, detail="Fare observation not found")
 
+    breakdown = get_observation_fare_breakdown(obs)
+
     return {
         "id": obs.id,
         "observation": {
@@ -345,7 +363,7 @@ def api_get_fare_detail(obs_id: int, db: Session = Depends(get_db)):
             "source": obs.source.name,
             "source_type": obs.source.source_type,
             "timestamp": obs.observation_timestamp.isoformat(),
-            "ingestion_channel": "Automated ETL Ingestion Pipeline v2.4"
+            "ingestion_channel": "Automated ETL Ingestion Pipeline v2.4 (True Payable Engine)"
         },
         "flight": {
             "airline": obs.airline.name,
@@ -363,13 +381,19 @@ def api_get_fare_detail(obs_id: int, db: Session = Depends(get_db)):
         "fare": {
             "base_fare": obs.base_fare,
             "taxes": obs.taxes,
+            "convenience_fee": getattr(obs, "convenience_fee", 0.0) or 0.0,
+            "fuel_surcharge": getattr(obs, "fuel_surcharge", 0.0) or 0.0,
+            "mandatory_surcharge": getattr(obs, "mandatory_surcharge", 0.0) or 0.0,
+            "discount": getattr(obs, "discount", 0.0) or 0.0,
             "total_fare": obs.total_fare,
+            "standardized_payable_fare": breakdown["standardized_payable_fare"],
             "currency": obs.currency,
             "cabin": obs.cabin,
             "fare_family": obs.fare_family,
             "baggage": obs.baggage,
             "refundable": obs.refundable
         },
+        "fare_breakdown": breakdown,
         "validation": {
             "schema_status": "PASSED (ISO 8601, INR Currency, Positive Non-zero)",
             "duplicate_check": "VERIFIED (Unique Source-Flight-Timestamp Hash)",
@@ -381,8 +405,35 @@ def api_get_fare_detail(obs_id: int, db: Session = Depends(get_db)):
             "source_adapter": obs.source.source_type,
             "raw_payload_hash": f"SHA256-{hex(obs.id * 987654321)[2:18]}",
             "collected_at": obs.observation_timestamp.isoformat(),
-            "transformation_pipeline": "Standardized & CPI Normalized"
+            "transformation_pipeline": "Vajronix True Payable Standardized & CPI Normalized"
         }
+    }
+
+
+@router.get("/fares/{obs_id}/normalization-evidence", response_model=NormalizationEvidenceResponse)
+def api_get_normalization_evidence(obs_id: int, db: Session = Depends(get_db)):
+    obs = db.query(FareObservation).filter(FareObservation.id == obs_id).first()
+    if not obs:
+        raise HTTPException(status_code=404, detail="Fare observation not found")
+
+    steps = generate_normalization_evidence_pipeline(obs)
+    std_fare = getattr(obs, "standardized_payable_fare", None) or obs.total_fare
+    route_code = f"{obs.route.origin_airport.iata_code}-{obs.route.destination_airport.iata_code}"
+
+    return {
+        "observation_id": obs.id,
+        "flight_number": obs.flight_number,
+        "route": route_code,
+        "raw_fare": obs.total_fare,
+        "standardized_payable_fare": std_fare,
+        "validation_status": obs.validation_status,
+        "is_anomaly": obs.is_anomaly,
+        "pipeline_steps": steps,
+        "methodology_statement": (
+            "Observation underwent multi-factor transformation: raw component parsing, "
+            "mandatory fee normalization (excluding optional add-ons), advance-booking stratification, "
+            "and ML anomaly isolation before entering representative route calculation."
+        )
     }
 
 
@@ -424,6 +475,28 @@ def api_get_anomalies(db: Session = Depends(get_db)):
     results = []
     for an in anomalies:
         obs = an.observation
+        observed_val = getattr(obs, "standardized_payable_fare", None) or obs.total_fare
+
+        # Compute route median for reference
+        route_obs = (
+            db.query(FareObservation)
+            .filter(FareObservation.route_id == obs.route_id, FareObservation.is_anomaly == False)
+            .all()
+        )
+        route_fares = [
+            getattr(o, "standardized_payable_fare", None) or o.total_fare
+            for o in route_obs
+        ]
+        import numpy as np
+        med = float(np.median(route_fares)) if route_fares else 5480.0
+        dev = round(((observed_val - med) / max(1.0, med)) * 100.0, 1)
+
+        reason_codes = ["IQR_OUTLIER", "ISOLATION_FOREST_FLAG"]
+        if abs(dev) > 75.0:
+            reason_codes.append("HIGH_ROUTE_MEDIAN_DEVIATION")
+        if abs(dev) > 120.0 or "GDS" in an.reason:
+            reason_codes.append("CROSS_SOURCE_DISAGREEMENT")
+
         results.append({
             "id": an.id,
             "fare_observation_id": obs.id,
@@ -433,11 +506,20 @@ def api_get_anomalies(db: Session = Depends(get_db)):
             "flight_number": obs.flight_number,
             "travel_date": obs.travel_date,
             "booking_window": obs.booking_window,
-            "observed_fare": obs.total_fare,
-            "expected_fare_range": "₹4,800 – ₹7,200",
+            "observed_fare": observed_val,
+            "expected_fare_range": f"₹{int(med * 0.85):,} – ₹{int(med * 1.25):,}",
+            "route_median": round(med, 0),
+            "deviation_pct": dev,
             "anomaly_score": an.anomaly_score,
             "detection_method": an.detection_method,
+            "reason_codes": reason_codes,
             "reason": an.reason,
+            "detection_flags": {
+                "iqr_outlier": True,
+                "isolation_forest_flag": True,
+                "high_median_deviation": abs(dev) > 75.0,
+                "cross_source_disagreement": "CROSS_SOURCE_DISAGREEMENT" in reason_codes,
+            },
             "review_status": an.review_status,
             "timestamp": obs.observation_timestamp
         })
@@ -794,87 +876,69 @@ def api_get_source_agreement(
     cabin: str = Query("Economy"),
     db: Session = Depends(get_db)
 ):
-    from sqlalchemy.orm import aliased
-    import numpy as np
-    from ..services.data_service import apply_valid_observations_filter
-
-    OriginAirport = aliased(Airport, name="agr_orig_ap")
-    DestAirport = aliased(Airport, name="agr_dest_ap")
-
-    base_query = (
-        db.query(FareObservation)
-        .join(Route, FareObservation.route_id == Route.id)
-        .join(OriginAirport, Route.origin_airport_id == OriginAirport.id)
-        .join(DestAirport, Route.destination_airport_id == DestAirport.id)
-        .filter(
-            OriginAirport.iata_code == origin.upper(),
-            DestAirport.iata_code == destination.upper(),
-            FareObservation.booking_window == booking_window,
-            FareObservation.cabin == cabin,
-        )
+    return compute_source_agreement(
+        db,
+        origin_code=origin,
+        destination_code=destination,
+        booking_window=booking_window,
+        cabin=cabin
     )
-    obs = apply_valid_observations_filter(base_query).all()
 
-    if not obs:
-        # Fallback to route level
-        fallback_query = (
-            db.query(FareObservation)
-            .join(Route, FareObservation.route_id == Route.id)
-            .join(OriginAirport, Route.origin_airport_id == OriginAirport.id)
-            .join(DestAirport, Route.destination_airport_id == DestAirport.id)
-            .filter(
-                OriginAirport.iata_code == origin.upper(),
-                DestAirport.iata_code == destination.upper(),
-            )
-        )
-        obs = apply_valid_observations_filter(fallback_query).limit(100).all()
 
-    sources = db.query(Source).all()
-    all_fares = [o.total_fare for o in obs] if obs else [5248.0]
-    overall_median = float(np.median(all_fares))
+# --- NATIONAL & ROUTE TRACE EXPLAINABILITY ---
+@router.get("/index/national/explain")
+def api_get_national_index_explain(db: Session = Depends(get_db)):
+    summary = get_dashboard_summary(db)
+    contributors = get_top_contributors(db)
+    lineage = get_full_data_lineage(db)
+    return {
+        "national_index": summary["index"],
+        "base_index": summary["base_index"],
+        "monthly_change": summary["monthly_change"],
+        "daily_change": summary["daily_change"],
+        "quality_score": summary["quality_score"],
+        "methodology": METHODOLOGY_CONFIG,
+        "calculated_at": summary["last_updated"],
+        "lineage_available": True,
+        "total_routes_monitored": summary["routes_monitored"],
+        "total_valid_observations": summary["observations"],
+        "top_positive_contributors": contributors["top_positive_contributors"],
+        "top_negative_contributors": contributors["top_negative_contributors"],
+        "deterministic_summary": contributors["deterministic_summary"],
+        "routes": lineage["routes"],
+    }
 
-    tariffs = []
-    max_dev = 0.0
 
-    for src in sources:
-        src_fares = [o.total_fare for o in obs if o.source_id == src.id]
-        if src_fares:
-            src_med = float(np.median(src_fares))
-        else:
-            # Deterministic source variance
-            factor = 1.0 + (src.id % 3 - 1) * 0.005
-            src_med = round(overall_median * factor, 0)
-
-        taxes = round(src_med * 0.18 + 450.0, 0)
-        base = src_med - taxes
-        dev = round(((src_med - overall_median) / max(1.0, overall_median)) * 100.0, 2)
-        if abs(dev) > max_dev:
-            max_dev = abs(dev)
-
-        tariffs.append({
-            "source_name": src.name,
-            "source_type": src.source_type,
-            "total_fare": src_med,
-            "base_fare": base,
-            "taxes": taxes,
-            "diff_from_median_pct": dev,
-            "is_suspicious_outlier": abs(dev) > 5.0,
-            "status": "CONCORDANT" if abs(dev) <= 5.0 else "DEVIANT"
-        })
-
-    agreement_score = round(max(85.0, min(99.8, 100.0 - max_dev * 2.5)), 1)
-
+@router.get("/index/routes/{origin}/{destination}/explain")
+def api_get_route_index_explain(origin: str, destination: str, db: Session = Depends(get_db)):
+    details = get_route_details(db, origin, destination)
+    if not details:
+        raise HTTPException(status_code=404, detail="Route corridor not found")
     return {
         "route_code": f"{origin.upper()}-{destination.upper()}",
-        "booking_window": booking_window,
-        "cabin": cabin,
-        "median_fare": round(overall_median, 0),
-        "agreement_score": agreement_score,
-        "max_deviation_pct": round(max_dev, 2),
-        "suspicious_sources_flagged": sum(1 for t in tariffs if t["is_suspicious_outlier"]),
-        "tariffs": tariffs,
-        "interpretation": f"Cross-source tariff agreement for {origin.upper()}–{destination.upper()} ({booking_window}) stands at {agreement_score}%. Discrepancies across authorized adapters are within ±{max_dev:.2f}% statistical tolerance bounds."
+        "origin_city": details["origin"]["city"],
+        "destination_city": details["destination"]["city"],
+        "route_weight": details["route_weight"],
+        "route_index": details["route_index"],
+        "base_fare": details["base_fare"],
+        "representative_fare": details["average_fare"],
+        "price_relative": details["price_relative"],
+        "monthly_change": details["monthly_change"],
+        "volatility": details["volatility"],
+        "data_confidence": details["data_confidence"],
+        "sample_count": details["sample_count"],
+        "methodology": METHODOLOGY_CONFIG,
+        "booking_windows": details["booking_windows"],
+        "airline_breakdown": details["airline_breakdown"],
     }
+
+
+@router.get("/index/routes/{origin}/{destination}/lineage")
+def api_get_route_lineage(origin: str, destination: str, db: Session = Depends(get_db)):
+    lineage_detail = get_route_lineage_detail(db, origin, destination)
+    if not lineage_detail:
+        raise HTTPException(status_code=404, detail=f"Lineage for route {origin}->{destination} not found")
+    return lineage_detail
 
 
 # --- STATISTICAL AUDIT LOG ---

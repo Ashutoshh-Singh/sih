@@ -379,12 +379,15 @@ export interface SourceAgreementData {
   tariffs: {
     source_name: string;
     source_type: string;
-    total_fare: number;
+    standardized_payable_fare?: number;
+    total_fare?: number;
     base_fare: number;
     taxes: number;
+    convenience_fee?: number;
     diff_from_median_pct: number;
     is_suspicious_outlier: boolean;
     status: string;
+    samples_analyzed?: number;
   }[];
   interpretation: string;
 }

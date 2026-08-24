@@ -243,10 +243,18 @@ function RouteExplorerContent() {
           {/* Action Trigger */}
           <div className="flex items-end">
             <button
-              onClick={() => fetchRoute(origin, destination)}
-              className="w-full p-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-cyan-400 text-slate-950 font-bold text-xs hover:opacity-90 transition-opacity"
+              onClick={() => fetchRoute(origin, destination, bookingWindow, cabin, fareCategory, travelDate)}
+              disabled={isLoading}
+              className="w-full p-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-cyan-400 text-slate-950 font-bold text-xs hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-1.5"
             >
-              Analyse Route
+              {isLoading ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                  <span>Analyzing...</span>
+                </>
+              ) : (
+                <span>Analyse Route</span>
+              )}
             </button>
           </div>
         </div>

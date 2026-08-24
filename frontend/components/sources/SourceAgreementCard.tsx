@@ -108,25 +108,29 @@ export const SourceAgreementCard: React.FC<{ routeCode?: string }> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 bg-slate-950/60 font-mono">
-                {data.tariffs.map((t, idx) => (
-                  <tr key={idx} className="hover:bg-slate-900/40">
-                    <td className="p-3 font-bold text-white font-sans flex items-center gap-2">
-                      <Server className="w-3.5 h-3.5 text-sky-400" />
-                      {t.source_name}
-                    </td>
-                    <td className="p-3 text-slate-400 text-[11px]">{t.source_type}</td>
-                    <td className="p-3 text-right text-slate-400">₹{t.base_fare} + ₹{t.taxes}</td>
-                    <td className="p-3 text-right font-bold text-white">₹{t.total_fare.toLocaleString("en-IN")}</td>
-                    <td className="p-3 text-right text-sky-300">
-                      {t.diff_from_median_pct >= 0 ? "+" : ""}{t.diff_from_median_pct.toFixed(2)}%
-                    </td>
-                    <td className="p-3 text-center">
-                      <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-bold">
-                        {t.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {data.tariffs.map((t, idx) => {
+                  const fareVal = t.standardized_payable_fare ?? t.total_fare ?? (t.base_fare + t.taxes) ?? 0;
+                  const diffVal = t.diff_from_median_pct ?? 0;
+                  return (
+                    <tr key={idx} className="hover:bg-slate-900/40">
+                      <td className="p-3 font-bold text-white font-sans flex items-center gap-2">
+                        <Server className="w-3.5 h-3.5 text-sky-400" />
+                        {t.source_name}
+                      </td>
+                      <td className="p-3 text-slate-400 text-[11px]">{t.source_type}</td>
+                      <td className="p-3 text-right text-slate-400">₹{(t.base_fare ?? 0).toLocaleString("en-IN")} + ₹{(t.taxes ?? 0).toLocaleString("en-IN")}</td>
+                      <td className="p-3 text-right font-bold text-white">₹{fareVal.toLocaleString("en-IN")}</td>
+                      <td className="p-3 text-right text-sky-300">
+                        {diffVal >= 0 ? "+" : ""}{diffVal.toFixed(2)}%
+                      </td>
+                      <td className="p-3 text-center">
+                        <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-bold">
+                          {t.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

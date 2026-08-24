@@ -1,24 +1,60 @@
+"""
+Vajronix Statistical Index Engine
+Ministry of Statistics and Programme Implementation (MoSPI) - SIH 2026
+
+Deterministic price index calculation using:
+- True Payable Standardized Fares
+- 10th-90th Percentile Trimmed Mean Representative Fare
+- Corridor Price Relatives (Rt = Pt / P0)
+- Fixed DGCA Domestic Passenger Seat-Volume Weights (Sum = 100.0%)
+- Weighted Laspeyres National Price Index Aggregation
+"""
+
 import datetime
+from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Any, Tuple, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+
 from ..database.models import Route, RouteIndex, NationalIndex, FareObservation, Airport
 
 
-def calculate_representative_fare(fares: List[float], method: str = "trimmed_mean") -> float:
+# Centralized Methodology Configuration
+METHODOLOGY_CONFIG = {
+    "version": "Prototype Weighted Laspeyres v1.0",
+    "base_period_index": 100.0,
+    "trim_lower_percentile": 10.0,
+    "trim_upper_percentile": 90.0,
+    "min_observations_for_trimming": 5,
+    "representative_fare_method": "trimmed_mean",  # trimmed_mean, median, mean
+    "aggregation_method": "Weighted Laspeyres",
+    "governance_rule": "AI protects the data. Mathematics calculates the index.",
+    "disclaimer": "Prototype methodology for CPI evaluation. Requires statutory MoSPI validation before official publication.",
+}
+
+
+def calculate_representative_fare(
+    fares: List[float],
+    method: str = "trimmed_mean",
+    lower_pct: float = 10.0,
+    upper_pct: float = 90.0
+) -> float:
     """
     Computes a representative route fare robust to promotional outliers and peak spikes.
     Method: trimmed mean (10th to 90th percentile) or median.
     """
     if not fares:
         return 0.0
-    arr = np.array(fares)
+    arr = np.array(fares, dtype=float)
+    arr = arr[arr > 0]
+    if len(arr) == 0:
+        return 0.0
+
     if method == "trimmed_mean" and len(arr) >= 5:
-        p10 = np.percentile(arr, 10)
-        p90 = np.percentile(arr, 90)
-        trimmed = arr[(arr >= p10) & (arr <= p90)]
+        p_low = np.percentile(arr, lower_pct)
+        p_high = np.percentile(arr, upper_pct)
+        trimmed = arr[(arr >= p_low) & (arr <= p_high)]
         return float(np.mean(trimmed)) if len(trimmed) > 0 else float(np.mean(arr))
     return float(np.median(arr))
 
@@ -44,7 +80,8 @@ def aggregate_national_index(route_data: List[Dict[str, Any]]) -> Dict[str, Any]
         return {
             "national_index": 100.0,
             "total_weight": 0.0,
-            "route_contributions": []
+            "route_contributions": [],
+            "methodology": METHODOLOGY_CONFIG,
         }
 
     total_weight = sum(item["weight"] for item in route_data)
@@ -57,12 +94,11 @@ def aggregate_national_index(route_data: List[Dict[str, Any]]) -> Dict[str, Any]
     # Calculate contribution of each route to (National Index - 100) or movement
     route_contributions = []
     for item in route_data:
-        # Route contribution in index points relative to 100 base
         weight_norm = item["weight"] / total_weight
         contrib_pts = weight_norm * (item["route_index"] - 100.0)
         route_contributions.append({
             **item,
-            "normalized_weight": weight_norm,
+            "normalized_weight": round(weight_norm, 4),
             "contribution_points": round(contrib_pts, 2),
             "mom_change": round((item["route_index"] - 100.0), 2)
         })
@@ -73,7 +109,8 @@ def aggregate_national_index(route_data: List[Dict[str, Any]]) -> Dict[str, Any]
     return {
         "national_index": round(national_index, 2),
         "total_weight": round(total_weight, 4),
-        "route_contributions": route_contributions
+        "route_contributions": route_contributions,
+        "methodology": METHODOLOGY_CONFIG,
     }
 
 
@@ -121,7 +158,9 @@ def calculate_route_representative_fare(
 ) -> float:
     """
     Computes representative fare from valid database observations using trimmed mean.
+    Uses standardized_payable_fare as single source of truth.
     """
+    query = db.query(FareObservation).filter(FareObservation.route_id == route_id)
     if not include_anomalies:
         query = query.filter(
             FareObservation.is_anomaly == False,
@@ -136,7 +175,10 @@ def calculate_route_representative_fare(
     if not observations:
         return 5482.0
 
-    fares = [o.total_fare for o in observations]
+    fares = [
+        getattr(o, "standardized_payable_fare", None) or o.total_fare
+        for o in observations
+    ]
     return calculate_representative_fare(fares, method="trimmed_mean")
 
 

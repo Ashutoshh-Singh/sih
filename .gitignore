@@ -1,30 +1,113 @@
-.env
-.env.local
-.env.development
-.env.production
-.env.*.local
-!.env.example
-
+# ==========================================
+# Dependencies
+# ==========================================
 node_modules/
-.next/
-out/
-dist/
-.cache/
-*.log
+frontend/node_modules/
+.pnp
+.pnp.js
 
+# ==========================================
+# Next.js Build Outputs & Cache
+# ==========================================
+.next/
+frontend/.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
+
+# ==========================================
+# Python & Bytecode Artifacts
+# ==========================================
 __pycache__/
+*/__pycache__/
+*/*/__pycache__/
+*/*/*/__pycache__/
 *.py[cod]
-.pytest_cache/
+*$py.class
+*.so
+.Python
+env/
 venv/
 .venv/
-env/
+ENV/
+env.bak/
+venv.bak/
 
-.vscode/
-.idea/
+# ==========================================
+# Testing & Coverage
+# ==========================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
 
+# ==========================================
+# Environment Variables & Secrets
+# ==========================================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+backend/.env
+frontend/.env.local
+!*.example
+
+# ==========================================
+# Database & Runtime Data
+# ==========================================
+*.sqlite3-journal
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ==========================================
+# Logs
+# ==========================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ==========================================
+# OS & Editor Artifacts
+# ==========================================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-``
+[Dd]esktop.ini
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ==========================================
+# Archives & Bundles
+# ==========================================
 *.zip
-*.tmp
-*.temp
+*.tar.gz
+*.rar
+*.7z
+SIHI2026_MoSPI_Airfare_Index.zip

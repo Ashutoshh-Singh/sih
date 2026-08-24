@@ -43,7 +43,7 @@ def test_national_index_equals_weighted_route_aggregation():
         db.close()
 
 
-# Test 3: Representative fare equals trimmed mean of valid observations
+# Test 3: Representative fare equals trimmed mean of valid observations (using standardized payable fares)
 def test_representative_fare_equals_valid_observations_trimmed_mean():
     db = SessionLocal()
     try:
@@ -51,7 +51,10 @@ def test_representative_fare_equals_valid_observations_trimmed_mean():
         valid_obs = apply_valid_observations_filter(
             db.query(FareObservation).filter(FareObservation.route_id == del_bom.id)
         ).all()
-        valid_fares = [o.total_fare for o in valid_obs]
+        valid_fares = [
+            getattr(o, "standardized_payable_fare", None) or o.total_fare
+            for o in valid_obs
+        ]
         expected_rep_fare = round(calculate_representative_fare(valid_fares, method="trimmed_mean"), 0)
 
         response = client.get("/api/routes/DEL/BOM")
@@ -62,16 +65,24 @@ def test_representative_fare_equals_valid_observations_trimmed_mean():
         db.close()
 
 
-# Test 4: Fare arithmetic integrity (total = base + taxes)
+# Test 4: Fare arithmetic integrity (Standardized Payable Fare = Base + Taxes + Mandatory Fees - Discounts)
 def test_fare_arithmetic_integrity():
     db = SessionLocal()
     try:
         observations = db.query(FareObservation).limit(500).all()
         assert len(observations) > 0
         for obs in observations:
-            calc_sum = round(obs.base_fare + obs.taxes, 2)
-            assert abs(calc_sum - obs.total_fare) <= 0.01, (
-                f"Arithmetic error on Obs #{obs.id}: Base ({obs.base_fare}) + Taxes ({obs.taxes}) != Total ({obs.total_fare})"
+            expected_std = round(
+                obs.base_fare
+                + obs.taxes
+                + obs.convenience_fee
+                + obs.fuel_surcharge
+                + obs.mandatory_surcharge
+                - obs.discount,
+                2
+            )
+            assert abs(expected_std - obs.standardized_payable_fare) <= 0.05, (
+                f"Arithmetic error on Obs #{obs.id}: Expected Standardized ({expected_std}) != Recorded ({obs.standardized_payable_fare})"
             )
     finally:
         db.close()

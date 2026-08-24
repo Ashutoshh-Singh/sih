@@ -1,5 +1,5 @@
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 
@@ -15,8 +15,7 @@ class AirportResponse(BaseModel):
     latitude: float
     longitude: float
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Airline Schemas
@@ -26,8 +25,7 @@ class AirlineResponse(BaseModel):
     name: str
     market_share: float
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AirlineComparisonItem(BaseModel):
@@ -52,8 +50,7 @@ class RouteResponse(BaseModel):
     route_index: Optional[float] = None
     mom_change: Optional[float] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BookingWindowStat(BaseModel):
@@ -84,6 +81,51 @@ class RouteAnalysisResponse(BaseModel):
     airline_breakdown: List[AirlineComparisonItem]
 
 
+# Fare Component & Normalization Schemas
+class FareComponentBreakdown(BaseModel):
+    currency: str = "INR"
+    base_fare: float
+    taxes: float
+    convenience_fee: float = 0.0
+    fuel_surcharge: float = 0.0
+    mandatory_surcharge: float = 0.0
+    service_fee: float = 0.0
+    payment_fee: float = 0.0
+    mandatory_baggage_fee: float = 0.0
+    mandatory_seat_fee: float = 0.0
+    other_mandatory_charges: float = 0.0
+    discount: float = 0.0
+    coupon_discount: float = 0.0
+    raw_total_fare: float
+    standardized_payable_fare: float
+    mandatory_fees_total: float = 0.0
+    total_discounts: float = 0.0
+    included_mandatory_components: List[str] = []
+    excluded_optional_components: List[str] = []
+    statistical_justification: str
+
+
+class NormalizationEvidenceStep(BaseModel):
+    step_number: int
+    title: str
+    status: str
+    badge: str
+    detail: str
+    timestamp: str
+
+
+class NormalizationEvidenceResponse(BaseModel):
+    observation_id: int
+    flight_number: str
+    route: str
+    raw_fare: float
+    standardized_payable_fare: float
+    validation_status: str
+    is_anomaly: bool
+    pipeline_steps: List[NormalizationEvidenceStep]
+    methodology_statement: str
+
+
 # Fare Observation Schemas
 class ObservationResponse(BaseModel):
     id: int
@@ -104,7 +146,12 @@ class ObservationResponse(BaseModel):
     fare_family: str
     base_fare: float
     taxes: float
+    convenience_fee: float = 0.0
+    fuel_surcharge: float = 0.0
+    mandatory_surcharge: float = 0.0
+    discount: float = 0.0
     total_fare: float
+    standardized_payable_fare: float
     stops: int
     baggage: str
     refundable: bool
@@ -112,6 +159,16 @@ class ObservationResponse(BaseModel):
     quality_score: float
     is_anomaly: bool
     validation_status: str
+
+
+class ObservationDetailResponse(BaseModel):
+    id: int
+    observation: Dict[str, Any]
+    flight: Dict[str, Any]
+    fare: Dict[str, Any]
+    fare_breakdown: FareComponentBreakdown
+    validation: Dict[str, Any]
+    provenance: Dict[str, Any]
 
 
 # Index Schemas
@@ -170,6 +227,7 @@ class DataQualitySummary(BaseModel):
     anomaly_rate: float
     observations_evaluated: int
     last_evaluated: datetime
+    methodology: str = "Weighted Composite Index: 0.30*Completeness + 0.25*Freshness + 0.20*Schema + 0.15*Agreement + 0.10*Consistency"
 
 
 class AnomalyResponse(BaseModel):
@@ -183,9 +241,13 @@ class AnomalyResponse(BaseModel):
     booking_window: str
     observed_fare: float
     expected_fare_range: str
+    route_median: Optional[float] = None
+    deviation_pct: Optional[float] = None
     anomaly_score: float
     detection_method: str
+    reason_codes: List[str] = []
     reason: str
+    detection_flags: Optional[Dict[str, bool]] = None
     review_status: str
     timestamp: datetime
 
@@ -230,17 +292,27 @@ class ObservationLineageItem(BaseModel):
     id: int
     code: str
     airline: str
+    airline_code: Optional[str] = None
     flight_number: str
     total_fare: float
+    standardized_payable_fare: float
     base_fare: float
     taxes: float
+    convenience_fee: float = 0.0
+    fuel_surcharge: float = 0.0
+    mandatory_surcharge: float = 0.0
+    discount: float = 0.0
     booking_window: str
+    cabin: Optional[str] = "Economy"
+    fare_family: Optional[str] = "Standard"
     source_name: str
     source_type: str
     quality_score: float
     validation_status: str
+    is_anomaly: Optional[bool] = False
     collected_at: str
     payload_hash: str
+    full_payload_hash: Optional[str] = None
 
 
 class RouteLineageItem(BaseModel):
@@ -248,13 +320,17 @@ class RouteLineageItem(BaseModel):
     route_code: str
     origin_city: str
     destination_city: str
+    origin_iata: Optional[str] = None
+    destination_iata: Optional[str] = None
     route_weight: float
     route_index: float
     price_relative: float
     representative_fare: float
     base_fare: float
     contribution_points: float
+    total_observations_count: Optional[int] = 0
     valid_observations_count: int
+    excluded_anomalies_count: Optional[int] = 0
     sample_observations: List[ObservationLineageItem]
 
 
@@ -264,8 +340,11 @@ class IndexLineageResponse(BaseModel):
     calculation_timestamp: str
     dataset_version: str
     methodology_version: str = "Prototype Weighted Laspeyres v1.0"
+    methodology: Optional[Dict[str, Any]] = None
     total_routes_monitored: int
+    total_observations: Optional[int] = 0
     total_valid_observations: int
+    total_excluded_anomalies: Optional[int] = 0
     routes: List[RouteLineageItem]
 
 
@@ -342,12 +421,15 @@ class ScenarioSimulationResponse(BaseModel):
 class SourceTariffItem(BaseModel):
     source_name: str
     source_type: str
-    total_fare: float
+    standardized_payable_fare: float
+    total_fare: Optional[float] = None
     base_fare: float
     taxes: float
+    convenience_fee: Optional[float] = 0.0
     diff_from_median_pct: float
     is_suspicious_outlier: bool
     status: str
+    samples_analyzed: Optional[int] = 0
 
 
 class SourceAgreementResponse(BaseModel):
@@ -355,11 +437,16 @@ class SourceAgreementResponse(BaseModel):
     booking_window: str
     cabin: str
     median_fare: float
+    mean_fare: Optional[float] = None
+    dispersion_pct: Optional[float] = None
+    median_absolute_deviation: Optional[float] = None
     agreement_score: float
     max_deviation_pct: float
+    sources_compared: Optional[int] = 4
     suspicious_sources_flagged: int
     tariffs: List[SourceTariffItem]
     interpretation: str
+    methodology: Optional[str] = None
 
 
 # --- STATISTICAL AUDIT LOG SCHEMAS ---
@@ -429,8 +516,7 @@ class UserResponse(BaseModel):
     created_at: Optional[datetime] = None
     permissions: List[str] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserCreate(BaseModel):
@@ -478,7 +564,4 @@ class UserActivityResponse(BaseModel):
     status: str
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
-
-
+    model_config = ConfigDict(from_attributes=True)

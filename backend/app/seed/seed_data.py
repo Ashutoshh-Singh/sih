@@ -168,11 +168,20 @@ def seed_database():
 
                 expected_fare = approx_curr * curve_multiplier * al_factor
                 fare_noise = np.random.normal(1.0, window_volatility)
-                calc_total_fare = max(1950.0, round(expected_fare * fare_noise, 0))
+                target_fare = max(1950.0, round(expected_fare * fare_noise, 0))
 
-                # Strict Fare Arithmetic: total_fare = base_fare + taxes
-                taxes = round(calc_total_fare * 0.18 + 450.0, 2)
-                base = round(calc_total_fare - taxes, 2)
+                # True Payable Fare Normalization Decomposition:
+                taxes = round(target_fare * 0.18 + 450.0, 2)
+                fuel_surch = round(random.choice([350.0, 450.0, 550.0, 650.0]), 2)
+                conv_fee = round(399.0 if "OTA" in src.name else 250.0, 2)
+                mand_surch = round(random.choice([100.0, 150.0, 200.0]), 2)
+                disc = round(random.choice([0.0, 0.0, 150.0, 250.0, 300.0]), 2)
+
+                base = max(1200.0, round(target_fare - taxes, 2))
+                raw_advertised_total = round(base + taxes + fuel_surch, 2)
+                std_payable_fare = round(
+                    base + taxes + conv_fee + fuel_surch + mand_surch - disc, 2
+                )
 
                 obs_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
                     minutes=random.randint(5, 7200)
@@ -200,7 +209,18 @@ def seed_database():
                         fare_family=fare_family,
                         base_fare=base,
                         taxes=taxes,
-                        total_fare=calc_total_fare,
+                        convenience_fee=conv_fee,
+                        mandatory_surcharge=mand_surch,
+                        fuel_surcharge=fuel_surch,
+                        service_fee=0.0,
+                        payment_fee=0.0,
+                        mandatory_baggage_fee=0.0,
+                        mandatory_seat_fee=0.0,
+                        other_mandatory_charges=0.0,
+                        discount=disc,
+                        coupon_discount=0.0,
+                        total_fare=raw_advertised_total,
+                        standardized_payable_fare=std_payable_fare,
                         stops=0 if random.random() > 0.12 else 1,
                         baggage="15kg Check-in + 7kg Cabin",
                         refundable=fare_family in ["Flexi", "Corporate"],
@@ -232,8 +252,16 @@ def seed_database():
             if obs:
                 anom_taxes = round(fake_fare * 0.18 + 450.0, 2)
                 obs.taxes = anom_taxes
-                obs.base_fare = round(fake_fare - anom_taxes, 2)
+                obs.fuel_surcharge = 550.0
+                obs.convenience_fee = 399.0
+                obs.mandatory_surcharge = 150.0
+                obs.discount = 0.0
+                obs.base_fare = max(100.0, round(fake_fare - anom_taxes - obs.fuel_surcharge, 2))
                 obs.total_fare = fake_fare
+                obs.standardized_payable_fare = round(
+                    obs.base_fare + obs.taxes + obs.convenience_fee + obs.fuel_surcharge + obs.mandatory_surcharge - obs.discount,
+                    2
+                )
                 obs.is_anomaly = True
                 obs.validation_status = "ANOMALY"
                 obs.quality_score = 72.4
@@ -248,7 +276,7 @@ def seed_database():
                 db.add(anom)
         db.commit()
 
-        print("Step 3: Calculating Route Representative Fares Directly from Valid Observations...")
+        print("Step 3: Calculating Route Representative Fares Directly from Valid Standardized Observations...")
         today = datetime.date.today()
         route_calc_data = []
 
@@ -258,7 +286,10 @@ def seed_database():
                 db.query(FareObservation).filter(FareObservation.route_id == r.id)
             ).all()
 
-            valid_fares = [o.total_fare for o in valid_obs]
+            valid_fares = [
+                getattr(o, "standardized_payable_fare", None) or o.total_fare
+                for o in valid_obs
+            ]
             rep_fare = round(calculate_representative_fare(valid_fares, method="trimmed_mean"), 0)
 
             price_rel = round(rep_fare / base_fare, 4)

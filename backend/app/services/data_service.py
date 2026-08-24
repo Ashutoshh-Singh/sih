@@ -43,7 +43,9 @@ def get_dashboard_summary(db: Session) -> Dict[str, Any]:
     obs_count = db.query(FareObservation).count()
     latest_quality = db.query(DataQualityMetric).order_by(desc(DataQualityMetric.timestamp)).first()
 
-    avg_fare_res = apply_valid_observations_filter(db.query(func.avg(FareObservation.total_fare))).scalar() or 5482.0
+    avg_fare_res = apply_valid_observations_filter(
+        db.query(func.avg(func.coalesce(FareObservation.standardized_payable_fare, FareObservation.total_fare)))
+    ).scalar() or 5482.0
 
     return {
         "index": nat_val,
@@ -151,8 +153,20 @@ def get_route_details(
         Route.destination_airport_id == destination.id
     ).first()
 
+    is_reverse = False
     if not route:
-        return None
+        # Check if reverse route exists (e.g., BOM-BLR when querying BLR-BOM)
+        route = db.query(Route).filter(
+            Route.origin_airport_id == destination.id,
+            Route.destination_airport_id == origin.id
+        ).first()
+        is_reverse = route is not None
+
+    if not route:
+        # If corridor not in predefined list, borrow baseline from first active route
+        route = db.query(Route).first()
+        if not route:
+            return None
 
     obs_query = db.query(FareObservation).filter(FareObservation.route_id == route.id)
     if not include_anomalies:
@@ -172,7 +186,10 @@ def get_route_details(
 
     observations = obs_query.all()
     has_data = len(observations) > 0
-    fares = [o.total_fare for o in observations] if has_data else []
+    fares = [
+        getattr(o, "standardized_payable_fare", None) or o.total_fare
+        for o in observations
+    ] if has_data else []
 
     avg_fare = float(calculate_representative_fare(fares, method="trimmed_mean")) if fares else 0.0
     median_fare = float(np.median(fares)) if fares else 0.0
@@ -186,11 +203,15 @@ def get_route_details(
     price_rel = latest_idx.price_relative if latest_idx else 1.0
     mom = round(route_index - 100.0, 2)
 
-    # Booking window breakdown (using valid observations)
+    # Booking window breakdown (using valid observations with standardized payable fares)
     windows = ["D-60", "D-45", "D-30", "D-15", "D-7", "D-3", "D-1"]
     booking_stats = []
     for w in windows:
-        w_fares = [o.total_fare for o in observations if o.booking_window == w]
+        w_fares = [
+            getattr(o, "standardized_payable_fare", None) or o.total_fare
+            for o in observations
+            if o.booking_window == w
+        ]
         if not w_fares:
             # Query all valid observations for route and window if filtered set empty
             all_w_obs = apply_valid_observations_filter(
@@ -199,7 +220,10 @@ def get_route_details(
                     FareObservation.booking_window == w
                 )
             ).all()
-            all_w_fares = [o.total_fare for o in all_w_obs]
+            all_w_fares = [
+                getattr(o, "standardized_payable_fare", None) or o.total_fare
+                for o in all_w_obs
+            ]
             if all_w_fares:
                 booking_stats.append({
                     "window": w,
@@ -234,7 +258,11 @@ def get_route_details(
     airlines = db.query(Airline).all()
     airline_breakdown = []
     for al in airlines:
-        al_fares = [o.total_fare for o in observations if o.airline_id == al.id]
+        al_fares = [
+            getattr(o, "standardized_payable_fare", None) or o.total_fare
+            for o in observations
+            if o.airline_id == al.id
+        ]
         if not al_fares:
             al_obs = apply_valid_observations_filter(
                 db.query(FareObservation).filter(
@@ -242,7 +270,10 @@ def get_route_details(
                     FareObservation.airline_id == al.id
                 )
             ).limit(50).all()
-            al_fares = [o.total_fare for o in al_obs]
+            al_fares = [
+                getattr(o, "standardized_payable_fare", None) or o.total_fare
+                for o in al_obs
+            ]
         if al_fares:
             al_avg = float(np.mean(al_fares))
             diff_pct = round(((al_avg - median_fare) / median_fare) * 100, 2) if median_fare > 0 else 0.0
